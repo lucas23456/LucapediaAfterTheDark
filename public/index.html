@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Watch Together</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <h1>👾Lucapedia After The Dark</h1>
+    <div class="input-container">
+        <input type="text" id="roomIdInput" placeholder="Введи любую рандомную цифру (45664)">
+        <button onclick="createRoom()">🖱️Создать комнату</button>
+        <!-- <button onclick="joinRoom()">Подключится</button> -->
+        <button id="copyLinkButton" onclick="copyLink()" style="display:none;">💪Копировать ссылку</button>
+    </div>
+    <div class="movies-slider" id="moviesSlider"></div>
+    <div class="room-link" id="roomLink"></div>
+    <div class="video-container">
+        <video id="video" controls>
+            <source id="videoSource" src="" type="video/mp4">
+            Your browser does not support the video tag.
+        </video>
+    </div>
+    <div id="notification" class="notification">Synchronized</div>
+    <div id="error-message" class="error"></div>
+    <p>Сделано Лукасиком с любовью❤️</p>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const video = document.getElementById('video');
+        const videoSource = document.getElementById('videoSource');
+        const socket = io();
+        const notification = document.getElementById('notification');
+        const errorMessage = document.getElementById('error-message');
+        const roomIdInput = document.getElementById('roomIdInput');
+        const roomLink = document.getElementById('roomLink');
+        const copyLinkButton = document.getElementById('copyLinkButton');
+        const moviesSlider = document.getElementById('moviesSlider');
+        let selectedMovieId = null;
+        let isSeeking = false;
+        let isPlaying = false;
+        let syncInterval;
+        let currentRoomId = null;
+
+        function showNotification(message) {
+            notification.textContent = message;
+            notification.classList.add('show');
+            setTimeout(() => {
+                notification.classList.remove('show');
+            }, 2000);
+        }
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.style.display = 'block';
+        }
+
+        function createRoom() {
+            const roomId = roomIdInput.value.trim();
+            if (!roomId || !selectedMovieId) {
+                showError('Введи Id и выбери фильм');
+                return;
+            }
+            currentRoomId = roomId;
+            socket.emit('createRoom', { roomId, movieId: selectedMovieId });
+            const link = `${window.location.origin}/?roomId=${roomId}&movieId=${selectedMovieId}`;
+            roomLink.textContent = link;
+            roomLink.href = link;
+            copyLinkButton.style.display = 'inline-block';
+        }
+
+        function copyLink() {
+            const link = roomLink.textContent;
+            navigator.clipboard.writeText(link).then(() => {
+                showNotification('Ссылка скопирована в буфер обмена');
+            }).catch(err => {
+                showError('Ошибка при копировании ссылки: ' + err);
+            });
+        }
+
+        function joinRoom() {
+            const roomId = roomIdInput.value.trim();
+            if (!roomId) {
+                showError('Введи ID');
+                return;
+            }
+            currentRoomId = roomId;
+            socket.emit('joinRoom', roomId);
+        }
+
+        function getRoomIdFromUrl() {
+            const params = new URLSearchParams(window.location.search);
+            return params.get('roomId');
+        }
+
+        function getMovieIdFromUrl() {
+            const params = new URLSearchParams(window.location.search);
+            return params.get('movieId');
+        }
+
+        function loadMovies() {
+            fetch('/movies.json')
+                .then(response => response.json())
+                .then(movies => {
+                    movies.forEach(movie => {
+                        const movieItem = document.createElement('div');
+                        movieItem.className = 'movie-item';
+                        movieItem.innerHTML = `<img src="${movie.poster}" alt="${movie.title}"><p>${movie.title}</p>`;
+                        movieItem.onclick = () => selectMovie(movie.id, movie.url);
+                        moviesSlider.appendChild(movieItem);
+                    });
+                });
+        }
+
+        function selectMovie(movieId, movieUrl) {
+            selectedMovieId = movieId;
+            videoSource.src = movieUrl;
+            video.load();
+        }
+
+        const initialRoomId = getRoomIdFromUrl();
+        const initialMovieId = getMovieIdFromUrl();
+        if (initialRoomId) {
+            roomIdInput.value = initialRoomId;
+            joinRoom();
+            if (initialMovieId) {
+                fetch('/movies.json')
+                    .then(response => response.json())
+                    .then(movies => {
+                        const movie = movies.find(m => m.id == initialMovieId);
+                        if (movie) {
+                            selectMovie(movie.id, movie.url);
+                        }
+                    });
+            }
+        }
+
+        video.addEventListener('play', () => {
+            if (!isPlaying) {
+                socket.emit('play', { roomId: currentRoomId, time: video.currentTime });
+            }
+            isPlaying = false;
+            syncInterval = setInterval(() => {
+                socket.emit('sync', { roomId: currentRoomId, time: video.currentTime });
+            }, 1000);
+        });
+
+        video.addEventListener('pause', () => {
+            if (!isPlaying) {
+                socket.emit('pause', { roomId: currentRoomId, time: video.currentTime });
+            }
+            isPlaying = false;
+            clearInterval(syncInterval);
+        });
+
+        video.addEventListener('seeked', () => {
+            if (!isSeeking) {
+                socket.emit('seek', { roomId: currentRoomId, time: video.currentTime });
+            }
+            isSeeking = false;
+        });
+
+        socket.on('play', (time) => {
+            isPlaying = true;
+            video.currentTime = time;
+            video.play();
+            showNotification('Фильм играет👌');
+        });
+
+        socket.on('pause', (time) => {
+            isPlaying = true;
+            video.currentTime = time;
+            video.pause();
+            showNotification('Поставили на паузу🤌');
+        });
+
+        socket.on('seek', (time) => {
+            isSeeking = true;
+            video.currentTime = time;
+        });
+
+        socket.on('sync', (time) => {
+            if (Math.abs(video.currentTime - time) > 0.5) {
+                video.currentTime = time;
+                showNotification('Синхронизировано🤓🎉');
+            }
+        });
+
+        socket.on('movieSelected', (data) => {
+            const { movieId } = data;
+            fetch('/movies.json')
+                .then(response => response.json())
+                .then(movies => {
+                    const movie = movies.find(m => m.id === movieId);
+                    if (movie) {
+                        videoSource.src = movie.url;
+                        video.load();
+                    }
+                });
+        });
+
+        loadMovies();
+    </script>
+</body>
+
+</html>
